@@ -96,29 +96,73 @@ const GYMS_DB=[
 // TODO: Replace with real Google Maps Platform API calls when API key is connected
 // Required APIs: Geocoding API, Places API (Nearby Search), Place Details
 // Flow: postcode → Geocoding API → lat/lng → Places Nearby Search (type=gym) → results
+// ═══ GOOGLE MAPS: Load script + search gyms ═══
+const GMAPS_KEY=typeof import.meta!=="undefined"&&import.meta.env?.VITE_GOOGLE_MAPS_API_KEY||"";
+let gmapsLoaded=false;
+const loadGoogleMaps=()=>new Promise((resolve)=>{
+  if(gmapsLoaded&&window.google?.maps){resolve();return}
+  if(!GMAPS_KEY){console.warn("No Google Maps API key");resolve();return}
+  if(document.querySelector('script[src*="maps.googleapis.com"]')){
+    const wait=()=>window.google?.maps?resolve():setTimeout(wait,100);wait();return;
+  }
+  const s=document.createElement("script");
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${GMAPS_KEY}&libraries=places`;
+  s.async=true;s.defer=true;
+  s.onload=()=>{gmapsLoaded=true;resolve()};
+  s.onerror=()=>{console.warn("Google Maps failed to load");resolve()};
+  document.head.appendChild(s);
+});
+
 const searchGymsNearPostcode=async(postcode)=>{
   const pc=postcode.trim().toUpperCase();
   if(!pc)return[];
-  // TODO: Step 1 — Google Geocoding API
-  // const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(pc)}&region=uk&key=${GOOGLE_MAPS_API_KEY}`;
-  // const geoRes = await fetch(geocodeUrl).then(r=>r.json());
-  // const {lat, lng} = geoRes.results[0]?.geometry?.location || {};
 
-  // TODO: Step 2 — Google Places Nearby Search
-  // const placesUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=5000&type=gym&keyword=gym+fitness+centre+health+club&key=${GOOGLE_MAPS_API_KEY}`;
-  // const placesRes = await fetch(placesUrl).then(r=>r.json());
-  // return placesRes.results.map(p=>({
-  //   id: p.place_id,
-  //   name: p.name,
-  //   address: p.vicinity,
-  //   postcode: pc,
-  //   rating: p.rating || 0,
-  //   googlePlaceId: p.place_id,
-  //   latitude: p.geometry.location.lat,
-  //   longitude: p.geometry.location.lng,
-  // }));
+  // Try real Google Maps search
+  if(GMAPS_KEY){
+    try{
+      await loadGoogleMaps();
+      if(window.google?.maps){
+        // Step 1: Geocode postcode to coordinates
+        const geocoder=new window.google.maps.Geocoder();
+        const geoResult=await new Promise((resolve,reject)=>{
+          geocoder.geocode({address:pc+", UK",componentRestrictions:{country:"GB"}},(results,status)=>{
+            if(status==="OK"&&results[0])resolve(results[0].geometry.location);
+            else reject(new Error("Geocode failed: "+status));
+          });
+        });
 
-  // MOCK FALLBACK: Filter local gym database by postcode prefix
+        // Step 2: Search nearby gyms using Places
+        const tempDiv=document.createElement("div");
+        const service=new window.google.maps.places.PlacesService(tempDiv);
+        const places=await new Promise((resolve,reject)=>{
+          service.nearbySearch({
+            location:geoResult,
+            radius:5000,
+            type:"gym",
+            keyword:"gym fitness centre health club"
+          },(results,status)=>{
+            if(status==="OK"||status==="ZERO_RESULTS")resolve(results||[]);
+            else reject(new Error("Places search failed: "+status));
+          });
+        });
+
+        if(places.length>0){
+          return places.slice(0,8).map(p=>({
+            id:p.place_id,
+            name:p.name,
+            address:p.vicinity||"",
+            postcode:pc,
+            rating:p.rating||0,
+            googlePlaceId:p.place_id,
+            latitude:p.geometry.location.lat(),
+            longitude:p.geometry.location.lng(),
+          }));
+        }
+      }
+    }catch(err){console.warn("Google Maps search error:",err)}
+  }
+
+  // FALLBACK: Filter local mock gym database
   const results=GYMS_DB.filter(g=>g.postcode.startsWith(pc.substring(0,2))||g.postcode.startsWith(pc.substring(0,3)));
   return results.length?results:GYMS_DB.slice(0,4);
 };
